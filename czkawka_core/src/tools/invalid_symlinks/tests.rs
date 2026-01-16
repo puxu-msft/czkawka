@@ -1,3 +1,5 @@
+#![cfg(target_family = "unix")]
+
 use std::fs;
 use std::os::unix;
 use std::sync::Arc;
@@ -10,7 +12,6 @@ use crate::common::traits::Search;
 use crate::tools::invalid_symlinks::InvalidSymlinks;
 
 #[test]
-#[cfg(target_family = "unix")]
 fn test_find_invalid_symlinks() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path();
@@ -36,7 +37,6 @@ fn test_find_invalid_symlinks() {
 }
 
 #[test]
-#[cfg(target_family = "unix")]
 fn test_no_invalid_symlinks() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path();
@@ -59,7 +59,6 @@ fn test_no_invalid_symlinks() {
 }
 
 #[test]
-#[cfg(target_family = "unix")]
 fn test_deleted_target_creates_invalid_symlink() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path();
