@@ -1,0 +1,46 @@
+# Dockerfile for cross-compiling Czkawka to Windows from Linux
+# 
+# Usage:
+#   # Build the docker image
+#   docker build -t czkawka-cross-windows -f misc/docker/Dockerfile.cross-windows .
+#
+#   # Run compilation with output mounted to host
+#   docker run --rm -v $(pwd):/src -v $(pwd)/build-output:/output czkawka-cross-windows
+#
+# The compiled binaries will be in ./build-output/
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install base dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
+    pkg-config \
+    mingw-w64 \
+    mingw-w64-x86-64-dev \
+    libfontconfig1-dev \
+    libfreetype6-dev \
+    p7zip-full \
+    git \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.90.0
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Add Windows target
+RUN rustup target add x86_64-pc-windows-gnu
+
+# Verify installation
+RUN rustc --version && cargo --version
+
+WORKDIR /src
+
+# Build script
+COPY misc/docker/build-windows.sh /build-windows.sh
+RUN chmod +x /build-windows.sh
+
+ENTRYPOINT ["/build-windows.sh"]

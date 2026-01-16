@@ -1,0 +1,41 @@
+# Dockerfile for cross-compiling Czkawka GTK GUI to Windows
+# Uses the pre-built GTK4 cross-compilation image
+#
+# Usage:
+#   # Build the docker image
+#   docker build -t czkawka-cross-windows-gtk -f misc/docker/Dockerfile.cross-windows-gtk .
+#
+#   # Run compilation with output mounted to host
+#   docker run --rm -v $(pwd):/src -v $(pwd)/build-output:/output czkawka-cross-windows-gtk
+#
+# The compiled binaries (with all DLLs) will be in ./build-output/
+
+FROM ghcr.io/mglolenstine/gtk4-cross:gtk-4.12
+
+# Install additional dependencies
+RUN dnf install -y \
+    curl \
+    wget2 \
+    unzip \
+    mingw64-bzip2.noarch \
+    mingw64-poppler \
+    mingw64-poppler-glib \
+    mingw32-python3 \
+    rust-gio-devel \
+    adwaita-icon-theme \
+    && dnf clean all -y
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.90.0
+ENV PATH="/root/.cargo/env:${PATH}"
+
+# Add Windows target
+RUN source "$HOME/.cargo/env" && rustup target add x86_64-pc-windows-gnu
+
+WORKDIR /src
+
+# Build script for GTK version
+COPY misc/docker/build-windows-gtk.sh /build-windows-gtk.sh
+RUN chmod +x /build-windows-gtk.sh
+
+ENTRYPOINT ["/build-windows-gtk.sh"]
