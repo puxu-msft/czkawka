@@ -1,6 +1,8 @@
 use rfd::FileDialog;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
+use czkawka_core::common::sanitize_path_string;
+
 use crate::{Callabler, ExcludedDirectoriesModel, IncludedDirectoriesModel, MainWindow, Settings};
 
 pub(crate) fn connect_add_remove_directories(app: &MainWindow) {
@@ -12,7 +14,11 @@ pub(crate) fn connect_add_remove_directories(app: &MainWindow) {
 fn connect_add_manual_directories(app: &MainWindow) {
     let a = app.as_weak();
     app.global::<Callabler>().on_added_manual_directories(move |included_directories, list_of_files_to_add| {
-        let folders = list_of_files_to_add.lines().filter(|x| !x.is_empty()).map(str::to_string).collect::<Vec<_>>();
+        let folders = list_of_files_to_add
+            .lines()
+            .map(sanitize_path_string)
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>();
         if folders.is_empty() {
             return;
         }

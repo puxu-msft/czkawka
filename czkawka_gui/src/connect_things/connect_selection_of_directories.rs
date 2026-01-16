@@ -1,8 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-#[cfg(target_family = "windows")]
-use czkawka_core::common::normalize_windows_path;
+use czkawka_core::common::sanitize_path_string;
 use gdk4::{DragAction, FileList};
 use gtk4::prelude::*;
 use gtk4::{DropTarget, FileChooserNative, Notebook, Orientation, ResponseType, TreeView, Window};
@@ -195,12 +194,7 @@ fn add_manually_directories(window_main: &Window, tree_view: &TreeView, excluded
     dialog.connect_response(move |dialog, response_type| {
         if response_type == ResponseType::Ok {
             for text in entry.text().split(';') {
-                let text = text.trim().to_string();
-                #[cfg(target_family = "windows")]
-                let text = normalize_windows_path(text).to_string_lossy().to_string();
-                let mut text = text;
-
-                remove_ending_slashes(&mut text);
+                let text = sanitize_path_string(text);
 
                 if !text.is_empty() {
                     let list_store = tree_view.get_model();
@@ -221,78 +215,3 @@ fn add_manually_directories(window_main: &Window, tree_view: &TreeView, excluded
     });
 }
 
-fn remove_ending_slashes(original_string: &mut String) {
-    let mut windows_disk_path: bool = false;
-    let mut chars = original_string.chars();
-    if let Some(first_character) = chars.next()
-        && first_character.is_alphabetic()
-        && let Some(second_character) = chars.next()
-        && second_character == ':'
-    {
-        windows_disk_path = true;
-        original_string.push('/'); // In case of adding window path without ending slash e.g. C: instead C:/ or C:\
-    }
-
-    while (original_string != "/" && (original_string.ends_with('/') || original_string.ends_with('\\'))) && (!windows_disk_path || original_string.len() > 3) {
-        original_string.pop();
-    }
-}
-
-#[test]
-pub(crate) fn test_remove_ending_slashes() {
-    let mut original = "/home/rafal".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "/home/rafal");
-
-    let mut original = "/home/rafal/".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "/home/rafal");
-
-    let mut original = "/home/rafal\\".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "/home/rafal");
-
-    let mut original = "/home/rafal/////////".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "/home/rafal");
-
-    let mut original = "/home/rafal/\\//////\\\\".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "/home/rafal");
-
-    let mut original = "/home/rafal\\\\\\\\\\\\\\\\".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "/home/rafal");
-
-    let mut original = "\\\\\\\\\\\\\\\\\\\\\\\\".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "");
-
-    let mut original = "//////////".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "/");
-
-    let mut original = "C:/".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "C:/");
-
-    let mut original = "C:\\".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "C:\\");
-
-    let mut original = "C://////////".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "C:/");
-
-    let mut original = "C:/roman/function/".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "C:/roman/function");
-
-    let mut original = "C:/staszek/without".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "C:/staszek/without");
-
-    let mut original = "C:\\\\\\\\\\".to_string();
-    remove_ending_slashes(&mut original);
-    assert_eq!(&original, "C:\\");
-}
