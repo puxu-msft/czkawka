@@ -256,6 +256,86 @@ pub fn regex_check(expression_item: &SingleExcludedItem, directory_name: &str) -
     true
 }
 
+/// Sanitizes a path string for use in directory input fields.
+/// This function:
+/// - Trims leading and trailing whitespace
+/// - Removes surrounding quotes (single or double)
+/// - Normalizes the path (on Windows, uses normalize_windows_path)
+/// - Removes trailing slashes (except for root paths like "/" or "C:\")
+///
+/// # Examples
+/// ```
+/// use czkawka_core::common::sanitize_path_string;
+/// assert_eq!(sanitize_path_string("  /home/user  "), "/home/user");
+/// assert_eq!(sanitize_path_string("\"/home/user\""), "/home/user");
+/// assert_eq!(sanitize_path_string("'/home/user/'"), "/home/user");
+/// assert_eq!(sanitize_path_string("  \"C:\\Users\\test\"  "), "C:\\Users\\test");
+/// ```
+pub fn sanitize_path_string(path: &str) -> String {
+    let mut result = path.trim().to_string();
+
+    // Remove surrounding quotes (both single and double)
+    // Handle cases like: "path", 'path', ""path"", ''path''
+    while (result.starts_with('"') && result.ends_with('"')) || (result.starts_with('\'') && result.ends_with('\'')) {
+        if result.len() >= 2 {
+            result = result[1..result.len() - 1].to_string();
+            result = result.trim().to_string(); // Trim again after removing quotes
+        } else {
+            break;
+        }
+    }
+
+    // Remove unbalanced leading/trailing quotes
+    while result.starts_with('"') || result.starts_with('\'') {
+        result = result[1..].to_string();
+        result = result.trim_start().to_string();
+    }
+    while result.ends_with('"') || result.ends_with('\'') {
+        result = result[..result.len() - 1].to_string();
+        result = result.trim_end().to_string();
+    }
+
+    if result.is_empty() {
+        return result;
+    }
+
+    // Normalize path separators and remove trailing slashes
+    #[cfg(target_family = "windows")]
+    {
+        result = normalize_windows_path(&result).to_string_lossy().to_string();
+    }
+
+    // Remove trailing slashes, but preserve root paths
+    remove_ending_slashes(&mut result);
+
+    result
+}
+
+/// Removes trailing slashes from a path string, preserving root paths.
+/// Handles both forward slashes and backslashes.
+/// Preserves: "/", "C:\", "C:/"
+fn remove_ending_slashes(original_string: &mut String) {
+    let mut windows_disk_path: bool = false;
+    let mut chars = original_string.chars();
+    if let Some(first_character) = chars.next()
+        && first_character.is_alphabetic()
+        && let Some(second_character) = chars.next()
+        && second_character == ':'
+    {
+        windows_disk_path = true;
+        // In case of adding window path without ending slash e.g. C: instead C:/ or C:\
+        if original_string.len() == 2 {
+            original_string.push(std::path::MAIN_SEPARATOR);
+        }
+    }
+
+    while (original_string != "/" && (original_string.ends_with('/') || original_string.ends_with('\\')))
+        && (!windows_disk_path || original_string.len() > 3)
+    {
+        original_string.pop();
+    }
+}
+
 #[expect(clippy::string_slice)] // Is in char boundary
 pub fn normalize_windows_path<P: AsRef<Path>>(path_to_change: P) -> PathBuf {
     let path = path_to_change.as_ref();
@@ -708,6 +788,116 @@ mod test {
         assert_eq!(PathBuf::from("\\\\aBBa"), normalize_windows_path("\\\\aBBa"));
         assert_eq!(PathBuf::from("a"), normalize_windows_path("a"));
         assert_eq!(PathBuf::from(""), normalize_windows_path(""));
+    }
+
+    #[test]
+    fn test_sanitize_path_string() {
+        // Test trimming whitespace
+        assert_eq!(sanitize_path_string("   "), "");
+
+        // Test empty and whitespace-only strings
+        assert_eq!(sanitize_path_string(""), "");
+        assert_eq!(sanitize_path_string("  "), "");
+        assert_eq!(sanitize_path_string("\"\""), "");
+        assert_eq!(sanitize_path_string("''"), "");
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_sanitize_path_string_unix() {
+        // Test trimming whitespace
+        assert_eq!(sanitize_path_string("  /home/user  "), "/home/user");
+        assert_eq!(sanitize_path_string("\t/home/user\n"), "/home/user");
+
+        // Test removing double quotes
+        assert_eq!(sanitize_path_string("\"/home/user\""), "/home/user");
+        assert_eq!(sanitize_path_string("  \"/home/user\"  "), "/home/user");
+        assert_eq!(sanitize_path_string("\"\"/home/user\"\""), "/home/user");
+
+        // Test removing single quotes
+        assert_eq!(sanitize_path_string("'/home/user'"), "/home/user");
+        assert_eq!(sanitize_path_string("  '/home/user'  "), "/home/user");
+
+        // Test unbalanced quotes
+        assert_eq!(sanitize_path_string("\"/home/user"), "/home/user");
+        assert_eq!(sanitize_path_string("/home/user\""), "/home/user");
+        assert_eq!(sanitize_path_string("'/home/user"), "/home/user");
+        assert_eq!(sanitize_path_string("/home/user'"), "/home/user");
+
+        // Test trailing slashes removal
+        assert_eq!(sanitize_path_string("/home/user/"), "/home/user");
+        assert_eq!(sanitize_path_string("/home/user//"), "/home/user");
+        assert_eq!(sanitize_path_string("/home/user///"), "/home/user");
+
+        // Test root path preservation
+        assert_eq!(sanitize_path_string("/"), "/");
+        assert_eq!(sanitize_path_string("//"), "/");
+
+        // Test combined cases
+        assert_eq!(sanitize_path_string("  \"/home/user/\"  "), "/home/user");
+        assert_eq!(sanitize_path_string("  '/home/user/'  "), "/home/user");
+
+        // Test Windows-style paths on Unix (no path normalization, just trailing slashes removed)
+        assert_eq!(sanitize_path_string("\"C:\\Users\\test\""), "C:\\Users\\test");
+        assert_eq!(sanitize_path_string("  C:\\Users\\test\\  "), "C:\\Users\\test");
+    }
+
+    #[cfg(target_family = "windows")]
+    #[test]
+    fn test_sanitize_path_string_windows() {
+        // Windows-specific path normalization 
+        // Note: normalize_windows_path converts to lowercase except drive letter
+        assert_eq!(sanitize_path_string("c:/users/test"), "C:\\users\\test");
+        assert_eq!(sanitize_path_string("\"c:/users/test/\""), "C:\\users\\test");
+
+        // Windows root paths
+        assert_eq!(sanitize_path_string("C:\\"), "C:\\");
+        assert_eq!(sanitize_path_string("C:/"), "C:\\");
+        assert_eq!(sanitize_path_string("C:"), "C:\\");
+        assert_eq!(sanitize_path_string("\"D:\\\\\""), "D:\\");
+
+        // Test removing quotes on Windows (paths become lowercase)
+        assert_eq!(sanitize_path_string("\"C:\\Users\\test\""), "C:\\users\\test");
+        assert_eq!(sanitize_path_string("  \"C:\\Users\\test\\\"  "), "C:\\users\\test");
+
+        // Test trailing slashes removal on Windows
+        assert_eq!(sanitize_path_string("C:\\Users\\test\\"), "C:\\users\\test");
+        assert_eq!(sanitize_path_string("C:\\Users\\test\\\\"), "C:\\users\\test");
+    }
+
+    #[test]
+    fn test_remove_ending_slashes() {
+        let mut path = "/home/user".to_string();
+        remove_ending_slashes(&mut path);
+        assert_eq!(path, "/home/user");
+
+        let mut path = "/home/user/".to_string();
+        remove_ending_slashes(&mut path);
+        assert_eq!(path, "/home/user");
+
+        let mut path = "/home/user//".to_string();
+        remove_ending_slashes(&mut path);
+        assert_eq!(path, "/home/user");
+
+        let mut path = "/".to_string();
+        remove_ending_slashes(&mut path);
+        assert_eq!(path, "/");
+
+        let mut path = "C:\\".to_string();
+        remove_ending_slashes(&mut path);
+        assert_eq!(path, "C:\\");
+
+        let mut path = "C:/".to_string();
+        remove_ending_slashes(&mut path);
+        assert_eq!(path, "C:/");
+
+        let mut path = "C:".to_string();
+        remove_ending_slashes(&mut path);
+        assert_eq!(path, "C:\\");
+
+        let mut path = "C:\\Users\\test\\".to_string();
+        remove_ending_slashes(&mut path);
+        assert_eq!(path, "C:\\Users\\test");
     }
 
     #[test]
