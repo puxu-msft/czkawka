@@ -123,6 +123,7 @@ impl Temporary {
     }
 }
 
+#[expect(clippy::needless_pass_by_ref_mut)] // Used only on non-Windows platforms
 pub(crate) fn check_folder_children(
     dir_result: &mut Vec<PathBuf>,
     warnings: &mut Vec<String>,
