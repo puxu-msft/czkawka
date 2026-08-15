@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use rfd::FileDialog;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
@@ -14,11 +16,7 @@ pub(crate) fn connect_add_remove_directories(app: &MainWindow) {
 fn connect_add_manual_directories(app: &MainWindow) {
     let a = app.as_weak();
     app.global::<Callabler>().on_added_manual_directories(move |included_directories, list_of_files_to_add| {
-        let folders = list_of_files_to_add
-            .lines()
-            .map(sanitize_path_string)
-            .filter(|x| !x.is_empty())
-            .collect::<Vec<_>>();
+        let folders = list_of_files_to_add.lines().map(sanitize_path_string).filter(|x| !x.is_empty()).collect::<Vec<_>>();
         if folders.is_empty() {
             return;
         }
@@ -82,19 +80,22 @@ fn connect_add_directories(app: &MainWindow) {
     });
 }
 
+fn new_directory_paths(existing_paths: impl IntoIterator<Item = String>, folders: &[String]) -> Vec<String> {
+    let mut seen_paths = existing_paths.into_iter().collect::<HashSet<_>>();
+    folders.iter().filter(|path| seen_paths.insert((*path).clone())).cloned().collect()
+}
+
 fn add_included_directories(settings: &Settings, folders: &[String]) {
     let old_folders = settings.get_included_directories_model();
-    let old_folders_path = old_folders.iter().map(|x| x.path.to_string()).collect::<Vec<_>>();
     let mut new_folders = old_folders.iter().collect::<Vec<_>>();
-
-    let filtered_folders = folders.iter().filter(|x| !old_folders_path.contains(x)).collect::<Vec<_>>();
+    let filtered_folders = new_directory_paths(old_folders.iter().map(|folder| folder.path.to_string()), folders);
 
     for x in &mut new_folders {
         x.selected_row = false;
     }
 
-    new_folders.extend(filtered_folders.iter().map(|path| IncludedDirectoriesModel {
-        path: (*path).into(),
+    new_folders.extend(filtered_folders.into_iter().map(|path| IncludedDirectoriesModel {
+        path: path.into(),
         referenced_folder: false,
         selected_row: false,
     }));
@@ -107,17 +108,15 @@ fn add_included_directories(settings: &Settings, folders: &[String]) {
 
 fn add_excluded_directories(settings: &Settings, folders: &[String]) {
     let old_folders = settings.get_excluded_directories_model();
-    let old_folders_path = old_folders.iter().map(|x| x.path.to_string()).collect::<Vec<_>>();
     let mut new_folders = old_folders.iter().collect::<Vec<_>>();
-
-    let filtered_folders = folders.iter().filter(|x| !old_folders_path.contains(x)).collect::<Vec<_>>();
+    let filtered_folders = new_directory_paths(old_folders.iter().map(|folder| folder.path.to_string()), folders);
 
     for x in &mut new_folders {
         x.selected_row = false;
     }
 
-    new_folders.extend(filtered_folders.iter().map(|path| ExcludedDirectoriesModel {
-        path: (*path).into(),
+    new_folders.extend(filtered_folders.into_iter().map(|path| ExcludedDirectoriesModel {
+        path: path.into(),
         selected_row: false,
     }));
 
@@ -125,4 +124,23 @@ fn add_excluded_directories(settings: &Settings, folders: &[String]) {
 
     let new_folders_model = ModelRc::new(VecModel::from(new_folders));
     settings.set_excluded_directories_model(new_folders_model);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::new_directory_paths;
+
+    #[test]
+    fn new_directory_paths_skips_existing_and_repeated_entries() {
+        let existing_paths = vec!["C:\\existing".to_string()];
+        let folders = vec![
+            "C:\\existing".to_string(),
+            "C:\\new".to_string(),
+            "C:\\new".to_string(),
+            "C:\\other".to_string(),
+            "C:\\other".to_string(),
+        ];
+
+        assert_eq!(new_directory_paths(existing_paths, &folders), vec!["C:\\new", "C:\\other"]);
+    }
 }
