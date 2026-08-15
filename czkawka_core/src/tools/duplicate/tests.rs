@@ -95,10 +95,14 @@ fn test_find_duplicates_by_name() {
 fn test_case_insensitive_name_comparison() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path();
+    let first_directory = path.join("first");
+    let second_directory = path.join("second");
+    fs::create_dir(&first_directory).unwrap();
+    fs::create_dir(&second_directory).unwrap();
 
-    // Create files with same name but different case
-    fs::write(path.join("TEST.txt"), b"content1").unwrap();
-    fs::write(path.join("test.txt"), b"content2").unwrap();
+    // Different directories keep these distinct on case-insensitive file systems.
+    fs::write(first_directory.join("TEST.txt"), b"content1").unwrap();
+    fs::write(second_directory.join("test.txt"), b"content2").unwrap();
 
     let params = DuplicateFinderParameters::new(
         CheckingMethod::Name,

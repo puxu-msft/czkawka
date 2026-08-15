@@ -105,6 +105,9 @@ impl ExcludedItems {
 
 pub fn new_excluded_item(expression: &str) -> SingleExcludedItem {
     let expression = expression.trim().to_string();
+    // On Windows, normalize forward slashes to backslashes for consistent matching
+    #[cfg(target_family = "windows")]
+    let expression = expression.replace('/', "\\");
     let expression_splits: Vec<String> = expression.split('*').filter_map(|e| if e.is_empty() { None } else { Some(e.to_string()) }).collect();
     let mut unique_extensions_splits = expression_splits.clone();
     unique_extensions_splits.sort();
@@ -167,8 +170,16 @@ mod tests {
     #[test]
     fn test_new_excluded_item() {
         let item = new_excluded_item("  */test/*.txt  ");
-        assert_eq!(item.expression, "*/test/*.txt");
-        assert_eq!(item.expression_splits, vec!["/test/", ".txt"]);
+        #[cfg(target_family = "windows")]
+        {
+            assert_eq!(item.expression, "*\\test\\*.txt");
+            assert_eq!(item.expression_splits, vec!["\\test\\", ".txt"]);
+        }
+        #[cfg(not(target_family = "windows"))]
+        {
+            assert_eq!(item.expression, "*/test/*.txt");
+            assert_eq!(item.expression_splits, vec!["/test/", ".txt"]);
+        }
         assert_eq!(item.unique_extensions_splits.len(), 2);
 
         let item2 = new_excluded_item("*abc*def*abc*");

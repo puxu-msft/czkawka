@@ -271,6 +271,7 @@ pub fn regex_check(expression_item: &SingleExcludedItem, directory_name: &str) -
 /// assert_eq!(sanitize_path_string("'/home/user/'"), "/home/user");
 /// assert_eq!(sanitize_path_string("  \"C:\\Users\\test\"  "), "C:\\Users\\test");
 /// ```
+#[expect(clippy::string_slice)] // We check bounds before slicing
 pub fn sanitize_path_string(path: &str) -> String {
     let mut result = path.trim().to_string();
 
@@ -329,9 +330,7 @@ fn remove_ending_slashes(original_string: &mut String) {
         }
     }
 
-    while (original_string != "/" && (original_string.ends_with('/') || original_string.ends_with('\\')))
-        && (!windows_disk_path || original_string.len() > 3)
-    {
+    while (original_string != "/" && (original_string.ends_with('/') || original_string.ends_with('\\'))) && (!windows_disk_path || original_string.len() > 3) {
         original_string.pop();
     }
 }
@@ -750,34 +749,56 @@ mod test {
 
     #[test]
     fn test_regex() {
+        // Platform-independent tests
         assert!(regex_check(&new_excluded_item("*"), "/home/rafal"));
         assert!(regex_check(&new_excluded_item("*home*"), "/home/rafal"));
         assert!(regex_check(&new_excluded_item("*home"), "/home"));
-        assert!(regex_check(&new_excluded_item("*home/"), "/home/"));
-        assert!(regex_check(&new_excluded_item("*home/*"), "/home/"));
         assert!(regex_check(&new_excluded_item("*.git*"), "/home/.git"));
-        assert!(regex_check(&new_excluded_item("*/home/rafal*rafal*rafal*rafal*"), "/home/rafal/rafalrafalrafal"));
         assert!(regex_check(&new_excluded_item("AAA"), "AAA"));
-        assert!(regex_check(&new_excluded_item("AAA*"), "AAABDGG/QQPW*"));
-        assert!(!regex_check(&new_excluded_item("*home"), "/home/"));
         assert!(!regex_check(&new_excluded_item("*home"), "/homefasfasfasfasf/"));
         assert!(!regex_check(&new_excluded_item("*home"), "/homefasfasfasfasf"));
         assert!(!regex_check(&new_excluded_item("rafal*afal*fal"), "rafal"));
         assert!(!regex_check(&new_excluded_item("rafal*a"), "rafal"));
         assert!(!regex_check(&new_excluded_item("AAAAAAAA****"), "/AAAAAAAAAAAAAAAAA"));
+        assert!(!regex_check(&new_excluded_item("*TTT"), "/GGG"));
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_regex_unix() {
+        // Unix-specific tests using forward slashes
+        assert!(regex_check(&new_excluded_item("*home/"), "/home/"));
+        assert!(regex_check(&new_excluded_item("*home/*"), "/home/"));
+        assert!(regex_check(&new_excluded_item("*/home/rafal*rafal*rafal*rafal*"), "/home/rafal/rafalrafalrafal"));
+        assert!(regex_check(&new_excluded_item("AAA*"), "AAABDGG/QQPW*"));
+        assert!(!regex_check(&new_excluded_item("*home"), "/home/"));
         assert!(!regex_check(&new_excluded_item("*.git/*"), "/home/.git"));
         assert!(!regex_check(&new_excluded_item("*home/*koc"), "/koc/home/"));
         assert!(!regex_check(&new_excluded_item("*home/"), "/home"));
-        assert!(!regex_check(&new_excluded_item("*TTT"), "/GGG"));
         assert!(regex_check(
             &new_excluded_item("*/home/*/.local/share/containers"),
             "/var/home/roman/.local/share/containers"
         ));
+    }
 
-        if cfg!(target_family = "windows") {
-            assert!(regex_check(&new_excluded_item("*\\home"), "C:\\home"));
-            assert!(regex_check(&new_excluded_item("*/home"), "C:\\home"));
-        }
+    #[cfg(target_family = "windows")]
+    #[test]
+    fn test_regex_windows() {
+        // Windows-specific tests - forward slashes in patterns should match backslashes in paths
+        assert!(regex_check(&new_excluded_item("*\\home"), "C:\\home"));
+        assert!(regex_check(&new_excluded_item("*/home"), "C:\\home"));
+        assert!(regex_check(&new_excluded_item("*home\\"), "C:\\home\\"));
+        assert!(regex_check(&new_excluded_item("*home/"), "C:\\home\\"));
+        assert!(regex_check(&new_excluded_item("*home\\*"), "C:\\home\\"));
+        assert!(regex_check(&new_excluded_item("*\\home\\rafal*rafal*rafal*rafal*"), "C:\\home\\rafal\\rafalrafalrafal"));
+        assert!(!regex_check(&new_excluded_item("*home"), "C:\\home\\"));
+        assert!(!regex_check(&new_excluded_item("*.git\\*"), "C:\\home\\.git"));
+        assert!(!regex_check(&new_excluded_item("*home\\*koc"), "C:\\koc\\home\\"));
+        assert!(!regex_check(&new_excluded_item("*home\\"), "C:\\home"));
+        assert!(regex_check(
+            &new_excluded_item("*\\home\\*\\.local\\share\\containers"),
+            "C:\\var\\home\\roman\\.local\\share\\containers"
+        ));
     }
 
     #[test]
@@ -845,7 +866,7 @@ mod test {
     #[cfg(target_family = "windows")]
     #[test]
     fn test_sanitize_path_string_windows() {
-        // Windows-specific path normalization 
+        // Windows-specific path normalization
         // Note: normalize_windows_path converts to lowercase except drive letter
         assert_eq!(sanitize_path_string("c:/users/test"), "C:\\users\\test");
         assert_eq!(sanitize_path_string("\"c:/users/test/\""), "C:\\users\\test");
