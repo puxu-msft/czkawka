@@ -368,6 +368,7 @@ fn process_file_in_file_mode(
     }
 }
 
+#[expect(clippy::needless_pass_by_ref_mut)] // Used only on non-Windows platforms
 fn process_dir_in_file_symlink_mode(
     recursive_search: bool,
     entry_data: &DirEntry,
@@ -471,7 +472,12 @@ pub(crate) fn common_get_entry_data<'a>(entry: &'a Result<DirEntry, std::io::Err
     Some(entry_data)
 }
 pub(crate) fn common_get_metadata_dir(entry_data: &DirEntry, warnings: &mut Vec<String>, current_folder: &Path) -> Option<Metadata> {
-    let metadata: Metadata = match entry_data.metadata() {
+    #[cfg(target_family = "windows")]
+    let metadata_result = fs::symlink_metadata(entry_data.path());
+    #[cfg(not(target_family = "windows"))]
+    let metadata_result = entry_data.metadata();
+
+    let metadata: Metadata = match metadata_result {
         Ok(t) => t,
         Err(e) => {
             warnings.push(flc!(
@@ -585,6 +591,12 @@ mod tests {
         let dir = tempfile::Builder::new().tempdir()?;
         let (src, hard, other) = create_files(&dir)?;
         let secs = NOW.duration_since(SystemTime::UNIX_EPOCH).expect("Cannot fail calculating duration since epoch").as_secs();
+        let hard_link_entry = fs::read_dir(dir.path())?.find_map(|entry| {
+            let entry = entry.ok()?;
+            (entry.path() == hard).then_some(entry)
+        });
+        let hard_link_entry = hard_link_entry.expect("Hard link should exist");
+        assert!(hard_link_entry.file_type()?.is_file(), "Hard link should be classified as a file");
 
         let mut common_data = CommonToolData::new(ToolType::SimilarImages);
         common_data.directories.set_included_directory([dir.path().to_owned()].to_vec());
@@ -678,52 +690,30 @@ mod tests {
 
     #[cfg(target_family = "windows")]
     #[test]
-    fn test_traversal_group_by_inode() -> io::Result<()> {
+    fn test_missing_inode_keeps_all_files() -> io::Result<()> {
         let dir = tempfile::Builder::new().tempdir()?;
-        let (src, hard, other) = create_files(&dir)?;
+        let src = dir.path().join("a");
+        let other = dir.path().join("c");
         let secs = NOW.duration_since(SystemTime::UNIX_EPOCH).expect("Cannot fail duration from epoch").as_secs();
 
-        let mut common_data = CommonToolData::new(ToolType::SimilarImages);
-        common_data.directories.set_included_directory([dir.path().to_owned()].to_vec());
-        common_data.set_minimal_file_size(0);
+        fs::write(&src, CONTENT)?;
+        fs::write(&other, CONTENT)?;
 
-        match DirTraversalBuilder::new()
-            .group_by(inode)
-            .stop_flag(&Arc::default())
-            .common_data(&common_data)
-            .build()
-            .run()
-        {
-            DirTraversalResult::SuccessFiles {
-                warnings: _,
-                grouped_file_entries,
-            } => {
-                let actual: IndexSet<_> = grouped_file_entries.into_iter().flat_map(take_1_per_inode).collect();
-                assert_eq!(
-                    IndexSet::from([
-                        FileEntry {
-                            path: src,
-                            size: 1,
-                            modified_date: secs,
-                        },
-                        FileEntry {
-                            path: hard,
-                            size: 1,
-                            modified_date: secs,
-                        },
-                        FileEntry {
-                            path: other,
-                            size: 1,
-                            modified_date: secs,
-                        },
-                    ]),
-                    actual
-                );
-            }
-            _ => {
-                panic!("Expect SuccessFiles.");
-            }
-        };
+        let entries = vec![
+            FileEntry {
+                path: src,
+                size: 1,
+                modified_date: secs,
+            },
+            FileEntry {
+                path: other,
+                size: 1,
+                modified_date: secs,
+            },
+        ];
+
+        assert_eq!(inode(&entries[0]), None);
+        assert_eq!(take_1_per_inode((None, entries.clone())), entries);
         Ok(())
     }
 }
