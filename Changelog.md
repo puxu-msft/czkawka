@@ -11,6 +11,9 @@
 - Czkawka gui config file converted from custom format to json, so all settings needs to be set again(old txt file is not removed, so it may be used as reference for changes) 
 
 ### Core
+- Added duplicate detection by file size and name before hashing matching candidates, available in the CLI and Krokiet
+- Fixed duplicate scans missing newly added files on the first scan when matching prehashes were split between cached and newly calculated entries
+- Fixed automatic duplicate actions being skipped when reference directories are used, and corrected hard-link dry-run source paths
 - Extensions in similar images mode and in previews, drops validating if extension is correct(most of the time) - [#1623](https://github.com/qarmin/czkawka/pull/1623)
 - Build and runtime Musl and Glibc versions are printed to logs - [#1604](https://github.com/qarmin/czkawka/pull/1604/files)
 - Delayed removing destination file while symlinking, to avoid data loss in case of failure - [#1672](https://github.com/qarmin/czkawka/pull/1672)

@@ -31,6 +31,7 @@ pub enum CheckingMethod {
     None,
     Name,
     SizeName,
+    SizeNameHash,
     Size,
     Hash,
     AudioTags,

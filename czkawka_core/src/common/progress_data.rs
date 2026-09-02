@@ -51,7 +51,7 @@ use crate::common::model::{CheckingMethod, ToolType};
 // 2 - Extracting tags
 // 3 - Saving cache
 
-// Duplicates - Hash
+// Duplicates - Hash or SizeNameHash
 // 0 - Collecting files
 // 1 - Loading cache
 // 2 - Hash - first 1KB file
@@ -60,7 +60,7 @@ use crate::common::model::{CheckingMethod, ToolType};
 // 5 - Hash - normal hash
 // 6 - Saving cache
 
-// Duplicates - Name or SizeName or Size
+// Duplicates - Name, SizeName, or Size
 // 0 - Collecting files
 
 // Deleting files
@@ -175,7 +175,7 @@ impl ProgressData {
 
         let tool_type_checking_method: Option<ToolType> = match self.checking_method {
             CheckingMethod::AudioTags | CheckingMethod::AudioContent => Some(ToolType::SameMusic),
-            CheckingMethod::Name | CheckingMethod::SizeName | CheckingMethod::Size | CheckingMethod::Hash => Some(ToolType::Duplicate),
+            CheckingMethod::Name | CheckingMethod::SizeName | CheckingMethod::SizeNameHash | CheckingMethod::Size | CheckingMethod::Hash => Some(ToolType::Duplicate),
             CheckingMethod::None => None,
         };
         if let Some(tool_type) = tool_type_checking_method {

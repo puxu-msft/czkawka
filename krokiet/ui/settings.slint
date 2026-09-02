@@ -66,7 +66,7 @@ export global Settings {
     in-out property <bool> similar_images_sub_ignore_same_size: false;
 
     // Duplicates
-    in-out property <[string]> duplicates_sub_check_method: ["Hash", "Size", "Name", "Size and Name"];
+    in-out property <[string]> duplicates_sub_check_method: ["Hash", "Size, Name and Hash", "Size", "Name", "Size and Name"];
     in-out property <int> duplicates_sub_check_method_index: 0;
     in-out property <string> duplicates_sub_check_method_value: "Hash";
     in-out property <[string]> duplicates_sub_available_hash_type: ["Blake3", "CRC32", "XXH3"];

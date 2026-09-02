@@ -23,10 +23,21 @@ impl DeletingItems for DuplicateFinder {
             return WorkContinueStatus::Continue;
         }
 
+        if self.common_data.use_reference_folders {
+            let files_to_delete = match self.get_params().check_method {
+                CheckingMethod::Name => self.files_with_identical_names_referenced.values().cloned().collect::<Vec<_>>(),
+                CheckingMethod::SizeName => self.files_with_identical_size_names_referenced.values().cloned().collect::<Vec<_>>(),
+                CheckingMethod::Hash | CheckingMethod::SizeNameHash => self.files_with_identical_hashes_referenced.values().flatten().cloned().collect::<Vec<_>>(),
+                CheckingMethod::Size => self.files_with_identical_size_referenced.values().cloned().collect::<Vec<_>>(),
+                _ => panic!(),
+            };
+            return self.delete_referenced_elements_and_add_to_messages(stop_flag, progress_sender, files_to_delete);
+        }
+
         let files_to_delete = match self.get_params().check_method {
             CheckingMethod::Name => self.files_with_identical_names.values().cloned().collect::<Vec<_>>(),
             CheckingMethod::SizeName => self.files_with_identical_size_names.values().cloned().collect::<Vec<_>>(),
-            CheckingMethod::Hash => self.files_with_identical_hashes.values().flatten().cloned().collect::<Vec<_>>(),
+            CheckingMethod::Hash | CheckingMethod::SizeNameHash => self.files_with_identical_hashes.values().flatten().cloned().collect::<Vec<_>>(),
             CheckingMethod::Size => self.files_with_identical_size.values().cloned().collect::<Vec<_>>(),
             _ => panic!(),
         };
@@ -64,6 +75,16 @@ impl Search for DuplicateFinder {
                 }
                 CheckingMethod::Hash => {
                     self.common_data.stopped_search = self.check_files_size(stop_flag, progress_sender) == WorkContinueStatus::Stop;
+                    if self.common_data.stopped_search {
+                        return;
+                    }
+                    self.common_data.stopped_search = self.check_files_hash(stop_flag, progress_sender) == WorkContinueStatus::Stop;
+                    if self.common_data.stopped_search {
+                        return;
+                    }
+                }
+                CheckingMethod::SizeNameHash => {
+                    self.common_data.stopped_search = self.check_files_size_name(stop_flag, progress_sender) == WorkContinueStatus::Stop;
                     if self.common_data.stopped_search {
                         return;
                     }
@@ -265,7 +286,7 @@ impl PrintResults for DuplicateFinder {
                     write!(writer, "Not found any duplicates.")?;
                 }
             }
-            CheckingMethod::Hash => {
+            CheckingMethod::Hash | CheckingMethod::SizeNameHash => {
                 if !self.files_with_identical_hashes.is_empty() {
                     writeln!(
                         writer,
@@ -326,7 +347,9 @@ impl PrintResults for DuplicateFinder {
                     self.save_results_to_file_as_json_internal(file_name, &self.files_with_identical_size_names_referenced.values().collect::<Vec<_>>(), pretty_print)
                 }
                 CheckingMethod::Size => self.save_results_to_file_as_json_internal(file_name, &self.files_with_identical_size_referenced, pretty_print),
-                CheckingMethod::Hash => self.save_results_to_file_as_json_internal(file_name, &self.files_with_identical_hashes_referenced, pretty_print),
+                CheckingMethod::Hash | CheckingMethod::SizeNameHash => {
+                    self.save_results_to_file_as_json_internal(file_name, &self.files_with_identical_hashes_referenced, pretty_print)
+                }
                 _ => panic!(),
             }
         } else {
@@ -334,7 +357,7 @@ impl PrintResults for DuplicateFinder {
                 CheckingMethod::Name => self.save_results_to_file_as_json_internal(file_name, &self.files_with_identical_names, pretty_print),
                 CheckingMethod::SizeName => self.save_results_to_file_as_json_internal(file_name, &self.files_with_identical_size_names.values().collect::<Vec<_>>(), pretty_print),
                 CheckingMethod::Size => self.save_results_to_file_as_json_internal(file_name, &self.files_with_identical_size, pretty_print),
-                CheckingMethod::Hash => self.save_results_to_file_as_json_internal(file_name, &self.files_with_identical_hashes, pretty_print),
+                CheckingMethod::Hash | CheckingMethod::SizeNameHash => self.save_results_to_file_as_json_internal(file_name, &self.files_with_identical_hashes, pretty_print),
                 _ => panic!(),
             }
         }

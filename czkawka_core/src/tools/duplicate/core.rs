@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
+use std::mem;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
-use std::{mem, thread};
 
 use crossbeam_channel::Sender;
 use fun_time::fun_time;
@@ -22,6 +22,10 @@ use crate::common::traits::ResultEntry;
 use crate::tools::duplicate::{
     DuplicateEntry, DuplicateFinder, DuplicateFinderParameters, Info, PREHASHING_BUFFER_SIZE, THREAD_BUFFER, filter_hard_links, hash_calculation, hash_calculation_limit,
 };
+
+type HashGroupKey = (u64, Option<String>);
+type HashGroups = BTreeMap<HashGroupKey, Vec<DuplicateEntry>>;
+type HashCalculationResults = Vec<(HashGroupKey, BTreeMap<String, Vec<DuplicateEntry>>, Vec<String>)>;
 
 impl DuplicateFinder {
     pub fn new(params: DuplicateFinderParameters) -> Self {
@@ -158,7 +162,7 @@ impl DuplicateFinder {
             .group_by(group_by_func)
             .stop_flag(stop_flag)
             .progress_sender(progress_sender)
-            .checking_method(CheckingMethod::SizeName)
+            .checking_method(self.get_params().check_method)
             .build()
             .run();
 
@@ -169,13 +173,22 @@ impl DuplicateFinder {
                 self.files_with_identical_size_names = grouped_file_entries
                     .into_iter()
                     .filter_map(|(size_name, vector)| {
-                        if vector.len() > 1 {
-                            Some((size_name, vector.into_iter().map(FileEntry::into_duplicate_entry).collect()))
+                        let vector = if self.get_params().check_method == CheckingMethod::SizeNameHash && self.get_params().ignore_hard_links {
+                            filter_hard_links(vector)
                         } else {
+                            vector
+                        };
+                        if vector.len() <= 1 {
                             None
+                        } else {
+                            Some((size_name, vector.into_iter().map(FileEntry::into_duplicate_entry).collect()))
                         }
                     })
                     .collect();
+
+                if self.get_params().check_method == CheckingMethod::SizeNameHash {
+                    return WorkContinueStatus::Continue;
+                }
 
                 // Reference - only use in size, because later hash will be counted differently
                 if self.common_data.use_reference_folders {
@@ -331,44 +344,75 @@ impl DuplicateFinder {
     }
 
     #[fun_time(message = "prehash_load_cache_at_start", level = "debug")]
-    fn prehash_load_cache_at_start(&mut self) -> (BTreeMap<u64, Vec<DuplicateEntry>>, BTreeMap<u64, Vec<DuplicateEntry>>, BTreeMap<u64, Vec<DuplicateEntry>>) {
+    fn prehash_load_cache_at_start(&mut self, hash_groups: HashGroups) -> (BTreeMap<u64, Vec<DuplicateEntry>>, HashGroups, HashGroups) {
         // Cache algorithm
         // - Load data from cache
         // - Convert from BT<u64,Vec<DuplicateEntry>> to BT<String,DuplicateEntry>
         // - Save to proper values
         let loaded_hash_map;
-        let mut records_already_cached: BTreeMap<u64, Vec<DuplicateEntry>> = Default::default();
-        let mut non_cached_files_to_check: BTreeMap<u64, Vec<DuplicateEntry>> = Default::default();
+        let mut records_already_cached: HashGroups = Default::default();
+        let mut non_cached_files_to_check: HashGroups = Default::default();
 
         if self.get_params().use_prehash_cache {
+            let cache_candidates = Self::hash_groups_by_size(&hash_groups);
             let (messages, loaded_items) = load_cache_from_file_generalized_by_size::<DuplicateEntry>(
                 &get_duplicate_cache_file(&self.get_params().hash_type, true),
                 self.get_delete_outdated_cache(),
-                &self.files_with_identical_size,
+                &cache_candidates,
             );
             self.get_text_messages_mut().extend_with_another_messages(messages);
             loaded_hash_map = loaded_items.unwrap_or_default();
 
             Self::diff_loaded_and_prechecked_files(
                 "prehash_load_cache_at_start",
-                mem::take(&mut self.files_with_identical_size),
+                hash_groups,
                 &loaded_hash_map,
                 &mut records_already_cached,
                 &mut non_cached_files_to_check,
             );
         } else {
             loaded_hash_map = Default::default();
-            mem::swap(&mut self.files_with_identical_size, &mut non_cached_files_to_check);
+            non_cached_files_to_check = hash_groups;
         }
         (loaded_hash_map, records_already_cached, non_cached_files_to_check)
     }
 
+    fn hash_groups_by_size(hash_groups: &HashGroups) -> BTreeMap<u64, Vec<DuplicateEntry>> {
+        let mut groups_by_size: BTreeMap<u64, Vec<DuplicateEntry>> = BTreeMap::new();
+        for ((size, _name), entries) in hash_groups {
+            groups_by_size.entry(*size).or_default().extend(entries.iter().cloned());
+        }
+        groups_by_size
+    }
+
+    fn merge_prehash_results(records_already_cached: HashGroups, pre_hash_results: &HashCalculationResults) -> HashGroups {
+        let mut entries_by_group_and_hash: BTreeMap<(HashGroupKey, String), Vec<DuplicateEntry>> = BTreeMap::new();
+
+        for (group_key, entries) in records_already_cached {
+            for entry in entries {
+                entries_by_group_and_hash.entry((group_key.clone(), entry.hash.clone())).or_default().push(entry);
+            }
+        }
+        for (group_key, hash_map, _errors) in pre_hash_results {
+            for (hash, entries) in hash_map {
+                entries_by_group_and_hash
+                    .entry((group_key.clone(), hash.clone()))
+                    .or_default()
+                    .extend(entries.iter().cloned());
+            }
+        }
+
+        let mut pre_checked_map = HashGroups::new();
+        for ((group_key, _hash), mut entries) in entries_by_group_and_hash {
+            if entries.len() > 1 {
+                pre_checked_map.entry(group_key).or_default().append(&mut entries);
+            }
+        }
+        pre_checked_map
+    }
+
     #[fun_time(message = "prehash_save_cache_at_exit", level = "debug")]
-    fn prehash_save_cache_at_exit(
-        &mut self,
-        loaded_hash_map: BTreeMap<u64, Vec<DuplicateEntry>>,
-        pre_hash_results: Vec<(u64, BTreeMap<String, Vec<DuplicateEntry>>, Vec<String>)>,
-    ) {
+    fn prehash_save_cache_at_exit(&mut self, loaded_hash_map: BTreeMap<u64, Vec<DuplicateEntry>>, pre_hash_results: HashCalculationResults) {
         if self.get_params().use_prehash_cache {
             // All results = records already cached + computed results
             let mut save_cache_to_hashmap: BTreeMap<String, DuplicateEntry> = Default::default();
@@ -381,7 +425,7 @@ impl DuplicateFinder {
                 }
             }
 
-            for (size, hash_map, _errors) in pre_hash_results {
+            for ((size, _name), hash_map, _errors) in pre_hash_results {
                 if size >= self.get_params().minimal_prehash_cache_file_size {
                     for vec_file_entry in hash_map.into_values() {
                         for file_entry in vec_file_entry {
@@ -406,16 +450,17 @@ impl DuplicateFinder {
         &mut self,
         stop_flag: &Arc<AtomicBool>,
         progress_sender: Option<&Sender<ProgressData>>,
-        pre_checked_map: &mut BTreeMap<u64, Vec<DuplicateEntry>>,
+        hash_groups: HashGroups,
+        pre_checked_map: &mut HashGroups,
     ) -> WorkContinueStatus {
-        if self.files_with_identical_size.is_empty() {
+        if hash_groups.is_empty() {
             return WorkContinueStatus::Continue;
         }
 
         let check_type = self.get_params().hash_type;
         let progress_handler = prepare_thread_handler_common(progress_sender, CurrentStage::DuplicatePreHashCacheLoading, 0, self.get_test_type(), 0);
 
-        let (loaded_hash_map, records_already_cached, non_cached_files_to_check) = self.prehash_load_cache_at_start();
+        let (loaded_hash_map, records_already_cached, non_cached_files_to_check) = self.prehash_load_cache_at_start(hash_groups);
 
         progress_handler.join_thread();
         if check_if_stop_received(stop_flag) {
@@ -428,19 +473,18 @@ impl DuplicateFinder {
             self.get_test_type(),
             non_cached_files_to_check
                 .iter()
-                .map(|(size, items)| items.len() as u64 * PREHASHING_BUFFER_SIZE.min(*size))
+                .map(|((size, _name), items)| items.len() as u64 * PREHASHING_BUFFER_SIZE.min(*size))
                 .sum::<u64>(),
         );
 
         // Convert to vector to be able to use with_max_len method from rayon
-        let non_cached_files_to_check: Vec<(u64, Vec<DuplicateEntry>)> = non_cached_files_to_check.into_iter().collect();
+        let non_cached_files_to_check: Vec<(HashGroupKey, Vec<DuplicateEntry>)> = non_cached_files_to_check.into_iter().collect();
 
         debug!("Starting calculating prehash");
-        #[expect(clippy::type_complexity)]
-        let pre_hash_results: Vec<(u64, BTreeMap<String, Vec<DuplicateEntry>>, Vec<String>)> = non_cached_files_to_check
+        let pre_hash_results: HashCalculationResults = non_cached_files_to_check
             .into_par_iter()
             .with_max_len(3) // Vectors and BTreeMaps for really big inputs, leave some jobs to 0 thread, to avoid that I minimized max tasks for each thread to 3, which improved performance
-            .map(|(size, vec_file_entry)| {
+            .map(|(group_key, vec_file_entry)| {
                 let mut hashmap_with_hash: BTreeMap<String, Vec<DuplicateEntry>> = Default::default();
                 let mut errors: Vec<String> = Vec::new();
 
@@ -462,7 +506,7 @@ impl DuplicateFinder {
                     Some(())
                 })?;
 
-                Some((size, hashmap_with_hash, errors))
+                Some((group_key, hashmap_with_hash, errors))
             })
             .while_some()
             .collect();
@@ -474,22 +518,12 @@ impl DuplicateFinder {
         // Saving into cache
         let progress_handler = prepare_thread_handler_common(progress_sender, CurrentStage::DuplicatePreHashCacheSaving, 0, self.get_test_type(), 0);
 
-        // Add data from cache
-        for (size, mut vec_file_entry) in records_already_cached {
-            pre_checked_map.entry(size).or_default().append(&mut vec_file_entry);
-        }
-
-        // Check results
-        for (size, hash_map, errors) in &pre_hash_results {
+        for (_group_key, _hash_map, errors) in &pre_hash_results {
             if !errors.is_empty() {
                 self.common_data.text_messages.warnings.append(&mut errors.clone());
             }
-            for vec_file_entry in hash_map.values() {
-                if vec_file_entry.len() > 1 {
-                    pre_checked_map.entry(*size).or_default().append(&mut vec_file_entry.clone());
-                }
-            }
         }
+        *pre_checked_map = Self::merge_prehash_results(records_already_cached, &pre_hash_results);
 
         self.prehash_save_cache_at_exit(loaded_hash_map, pre_hash_results);
 
@@ -504,14 +538,15 @@ impl DuplicateFinder {
 
     fn diff_loaded_and_prechecked_files(
         function_name: &str,
-        used_map: BTreeMap<u64, Vec<DuplicateEntry>>,
+        used_map: HashGroups,
         loaded_hash_map: &BTreeMap<u64, Vec<DuplicateEntry>>,
-        records_already_cached: &mut BTreeMap<u64, Vec<DuplicateEntry>>,
-        non_cached_files_to_check: &mut BTreeMap<u64, Vec<DuplicateEntry>>,
+        records_already_cached: &mut HashGroups,
+        non_cached_files_to_check: &mut HashGroups,
     ) {
         debug!("{function_name} - started diff between loaded and prechecked files");
 
-        for (size, mut vec_file_entry) in used_map {
+        for (group_key, mut vec_file_entry) in used_map {
+            let size = group_key.0;
             if let Some(cached_vec_file_entry) = loaded_hash_map.get(&size) {
                 // TODO maybe hashmap is not needed when using < 4 elements
                 let mut cached_path_entries: IndexMap<&Path, DuplicateEntry> = IndexMap::new();
@@ -520,13 +555,13 @@ impl DuplicateFinder {
                 }
                 for file_entry in vec_file_entry {
                     if let Some(cached_file_entry) = cached_path_entries.swap_remove(file_entry.path.as_path()) {
-                        records_already_cached.entry(size).or_default().push(cached_file_entry);
+                        records_already_cached.entry(group_key.clone()).or_default().push(cached_file_entry);
                     } else {
-                        non_cached_files_to_check.entry(size).or_default().push(file_entry);
+                        non_cached_files_to_check.entry(group_key.clone()).or_default().push(file_entry);
                     }
                 }
             } else {
-                non_cached_files_to_check.entry(size).or_default().append(&mut vec_file_entry);
+                non_cached_files_to_check.entry(group_key).or_default().append(&mut vec_file_entry);
             }
         }
         debug!(
@@ -539,20 +574,18 @@ impl DuplicateFinder {
     }
 
     #[fun_time(message = "full_hashing_load_cache_at_start", level = "debug")]
-    fn full_hashing_load_cache_at_start(
-        &mut self,
-        mut pre_checked_map: BTreeMap<u64, Vec<DuplicateEntry>>,
-    ) -> (BTreeMap<u64, Vec<DuplicateEntry>>, BTreeMap<u64, Vec<DuplicateEntry>>, BTreeMap<u64, Vec<DuplicateEntry>>) {
+    fn full_hashing_load_cache_at_start(&mut self, pre_checked_map: HashGroups) -> (BTreeMap<u64, Vec<DuplicateEntry>>, HashGroups, HashGroups) {
         let loaded_hash_map;
-        let mut records_already_cached: BTreeMap<u64, Vec<DuplicateEntry>> = Default::default();
-        let mut non_cached_files_to_check: BTreeMap<u64, Vec<DuplicateEntry>> = Default::default();
+        let mut records_already_cached: HashGroups = Default::default();
+        let mut non_cached_files_to_check: HashGroups = Default::default();
 
         if self.common_data.use_cache {
             debug!("full_hashing_load_cache_at_start - using cache");
+            let cache_candidates = Self::hash_groups_by_size(&pre_checked_map);
             let (messages, loaded_items) = load_cache_from_file_generalized_by_size::<DuplicateEntry>(
                 &get_duplicate_cache_file(&self.get_params().hash_type, false),
                 self.get_delete_outdated_cache(),
-                &pre_checked_map,
+                &cache_candidates,
             );
             self.get_text_messages_mut().extend_with_another_messages(messages);
             loaded_hash_map = loaded_items.unwrap_or_default();
@@ -567,7 +600,7 @@ impl DuplicateFinder {
         } else {
             debug!("full_hashing_load_cache_at_start - not using cache");
             loaded_hash_map = Default::default();
-            mem::swap(&mut pre_checked_map, &mut non_cached_files_to_check);
+            non_cached_files_to_check = pre_checked_map;
         }
         (loaded_hash_map, records_already_cached, non_cached_files_to_check)
     }
@@ -575,17 +608,17 @@ impl DuplicateFinder {
     #[fun_time(message = "full_hashing_save_cache_at_exit", level = "debug")]
     fn full_hashing_save_cache_at_exit(
         &mut self,
-        records_already_cached: BTreeMap<u64, Vec<DuplicateEntry>>,
-        full_hash_results: &mut Vec<(u64, BTreeMap<String, Vec<DuplicateEntry>>, Vec<String>)>,
+        records_already_cached: HashGroups,
+        full_hash_results: &mut HashCalculationResults,
         loaded_hash_map: BTreeMap<u64, Vec<DuplicateEntry>>,
     ) {
         if !self.common_data.use_cache {
             return;
         }
-        'main: for (size, vec_file_entry) in records_already_cached {
+        'main: for (group_key, vec_file_entry) in records_already_cached {
             // Check if size already exists, if exists we must to change it outside because cannot have mut and non mut reference to full_hash_results
-            for (full_size, full_hashmap, _errors) in &mut (*full_hash_results) {
-                if size == *full_size {
+            for (full_group_key, full_hashmap, _errors) in &mut (*full_hash_results) {
+                if group_key == *full_group_key {
                     for file_entry in vec_file_entry {
                         full_hashmap.entry(file_entry.hash.clone()).or_default().push(file_entry);
                     }
@@ -597,7 +630,7 @@ impl DuplicateFinder {
             for file_entry in vec_file_entry {
                 temp_hashmap.entry(file_entry.hash.clone()).or_default().push(file_entry);
             }
-            full_hash_results.push((size, temp_hashmap, Vec::new()));
+            full_hash_results.push((group_key, temp_hashmap, Vec::new()));
         }
 
         // Must save all results to file, old loaded from file with all currently counted results
@@ -625,12 +658,7 @@ impl DuplicateFinder {
     }
 
     #[fun_time(message = "full_hashing", level = "debug")]
-    fn full_hashing(
-        &mut self,
-        stop_flag: &Arc<AtomicBool>,
-        progress_sender: Option<&Sender<ProgressData>>,
-        pre_checked_map: BTreeMap<u64, Vec<DuplicateEntry>>,
-    ) -> WorkContinueStatus {
+    fn full_hashing(&mut self, stop_flag: &Arc<AtomicBool>, progress_sender: Option<&Sender<ProgressData>>, pre_checked_map: HashGroups) -> WorkContinueStatus {
         if pre_checked_map.is_empty() {
             return WorkContinueStatus::Continue;
         }
@@ -649,20 +677,20 @@ impl DuplicateFinder {
             CurrentStage::DuplicateFullHashing,
             non_cached_files_to_check.values().map(Vec::len).sum(),
             self.get_test_type(),
-            non_cached_files_to_check.iter().map(|(size, items)| (*size) * items.len() as u64).sum::<u64>(),
+            non_cached_files_to_check.iter().map(|((size, _name), items)| (*size) * items.len() as u64).sum::<u64>(),
         );
 
-        let non_cached_files_to_check: Vec<(u64, Vec<DuplicateEntry>)> = non_cached_files_to_check.into_iter().collect();
+        let non_cached_files_to_check: Vec<(HashGroupKey, Vec<DuplicateEntry>)> = non_cached_files_to_check.into_iter().collect();
 
         let check_type = self.get_params().hash_type;
         debug!(
             "Starting full hashing of {} files",
             non_cached_files_to_check.iter().map(|(_size, v)| v.len() as u64).sum::<u64>()
         );
-        let mut full_hash_results: Vec<(u64, BTreeMap<String, Vec<DuplicateEntry>>, Vec<String>)> = non_cached_files_to_check
+        let mut full_hash_results: HashCalculationResults = non_cached_files_to_check
             .into_par_iter()
             .with_max_len(3)
-            .map(|(size, vec_file_entry)| {
+            .map(|(group_key, vec_file_entry)| {
                 let mut hashmap_with_hash: BTreeMap<String, Vec<DuplicateEntry>> = Default::default();
                 let mut errors: Vec<String> = Vec::new();
 
@@ -688,7 +716,7 @@ impl DuplicateFinder {
                     Some(())
                 })?;
 
-                Some((size, hashmap_with_hash, errors))
+                Some((group_key, hashmap_with_hash, errors))
             })
             .while_some()
             .collect();
@@ -703,7 +731,7 @@ impl DuplicateFinder {
 
         progress_handler.join_thread();
 
-        for (size, hash_map, mut errors) in full_hash_results {
+        for ((size, _name), hash_map, mut errors) in full_hash_results {
             self.common_data.text_messages.warnings.append(&mut errors);
             for (_hash, vec_file_entry) in hash_map {
                 if vec_file_entry.len() > 1 {
@@ -769,10 +797,22 @@ impl DuplicateFinder {
 
     #[fun_time(message = "check_files_hash", level = "debug")]
     pub(crate) fn check_files_hash(&mut self, stop_flag: &Arc<AtomicBool>, progress_sender: Option<&Sender<ProgressData>>) -> WorkContinueStatus {
-        assert_eq!(self.get_params().check_method, CheckingMethod::Hash);
+        assert!(matches!(self.get_params().check_method, CheckingMethod::Hash | CheckingMethod::SizeNameHash));
 
-        let mut pre_checked_map: BTreeMap<u64, Vec<DuplicateEntry>> = Default::default();
-        if self.prehashing(stop_flag, progress_sender, &mut pre_checked_map) == WorkContinueStatus::Stop {
+        let hash_groups: HashGroups = match self.get_params().check_method {
+            CheckingMethod::Hash => mem::take(&mut self.files_with_identical_size)
+                .into_iter()
+                .map(|(size, entries)| ((size, None), entries))
+                .collect(),
+            CheckingMethod::SizeNameHash => mem::take(&mut self.files_with_identical_size_names)
+                .into_iter()
+                .map(|((size, name), entries)| ((size, Some(name)), entries))
+                .collect(),
+            _ => unreachable!(),
+        };
+
+        let mut pre_checked_map: HashGroups = Default::default();
+        if self.prehashing(stop_flag, progress_sender, hash_groups, &mut pre_checked_map) == WorkContinueStatus::Stop {
             return WorkContinueStatus::Stop;
         }
 
@@ -782,10 +822,6 @@ impl DuplicateFinder {
 
         self.hash_reference_folders();
 
-        // Clean unused data
-        let files_with_identical_size = mem::take(&mut self.files_with_identical_size);
-        thread::spawn(move || drop(files_with_identical_size));
-
         WorkContinueStatus::Continue
     }
 }
@@ -793,4 +829,62 @@ impl DuplicateFinder {
 pub fn get_duplicate_cache_file(type_of_hash: &HashType, is_prehash: bool) -> String {
     let prehash_str = if is_prehash { "_prehash" } else { "" };
     format!("cache_duplicates_{type_of_hash:?}{prehash_str}_{CACHE_DUPLICATE_VERSION}.bin")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_hashes_preserve_size_name_groups() {
+        let first = DuplicateEntry {
+            path: "first/same.txt".into(),
+            size: 8,
+            modified_date: 1,
+            hash: "cached".to_string(),
+        };
+        let second = DuplicateEntry {
+            path: "second/other.txt".into(),
+            size: 8,
+            modified_date: 1,
+            hash: "cached".to_string(),
+        };
+        let used_map = BTreeMap::from([
+            ((8, Some("same.txt".to_string())), vec![first.clone()]),
+            ((8, Some("other.txt".to_string())), vec![second.clone()]),
+        ]);
+        let loaded_hash_map = BTreeMap::from([(8, vec![first, second])]);
+        let mut cached = HashGroups::new();
+        let mut uncached = HashGroups::new();
+
+        DuplicateFinder::diff_loaded_and_prechecked_files("test", used_map, &loaded_hash_map, &mut cached, &mut uncached);
+
+        assert!(uncached.is_empty());
+        assert_eq!(cached.len(), 2);
+        assert_eq!(cached[&(8, Some("same.txt".to_string()))][0].path, Path::new("first/same.txt"));
+        assert_eq!(cached[&(8, Some("other.txt".to_string()))][0].path, Path::new("second/other.txt"));
+    }
+
+    #[test]
+    fn cached_and_new_prehashes_are_merged_before_filtering() {
+        let group_key = (8, Some("same.txt".to_string()));
+        let cached_entry = DuplicateEntry {
+            path: "cached/same.txt".into(),
+            size: 8,
+            modified_date: 1,
+            hash: "matching-prehash".to_string(),
+        };
+        let new_entry = DuplicateEntry {
+            path: "new/same.txt".into(),
+            size: 8,
+            modified_date: 2,
+            hash: "matching-prehash".to_string(),
+        };
+        let cached = BTreeMap::from([(group_key.clone(), vec![cached_entry])]);
+        let calculated = vec![(group_key.clone(), BTreeMap::from([("matching-prehash".to_string(), vec![new_entry])]), Vec::new())];
+
+        let merged = DuplicateFinder::merge_prehash_results(cached, &calculated);
+
+        assert_eq!(merged[&group_key].len(), 2);
+    }
 }

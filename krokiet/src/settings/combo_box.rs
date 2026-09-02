@@ -118,6 +118,7 @@ impl StringComboBoxItems {
 
         let duplicates_check_method = Self::convert_to_combobox_items(&[
             ("hash", "Hash", CheckingMethod::Hash),
+            ("size_name_hash", "Size, Name and Hash", CheckingMethod::SizeNameHash),
             ("size", "Size", CheckingMethod::Size),
             ("name", "Name", CheckingMethod::Name),
             ("size_and_name", "Size and Name", CheckingMethod::SizeName),

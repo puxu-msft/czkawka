@@ -162,7 +162,7 @@ fn scan_duplicates(
             let mut vector;
             if tool.get_use_reference() {
                 match tool.get_params().check_method {
-                    CheckingMethod::Hash => {
+                    CheckingMethod::Hash | CheckingMethod::SizeNameHash => {
                         vector = tool
                             .get_files_with_identical_hashes_referenced()
                             .values()
@@ -184,7 +184,7 @@ fn scan_duplicates(
                 }
             } else {
                 match tool.get_params().check_method {
-                    CheckingMethod::Hash => {
+                    CheckingMethod::Hash | CheckingMethod::SizeNameHash => {
                         vector = tool.get_files_sorted_by_hash().values().flatten().cloned().map(|items| (None, items)).collect::<Vec<_>>();
                     }
                     CheckingMethod::Name | CheckingMethod::Size | CheckingMethod::SizeName => {
@@ -207,7 +207,7 @@ fn scan_duplicates(
             let info = tool.get_information();
             let scanning_time_str = format_time(info.scanning_time);
             let (duplicates_number, groups_number, lost_space) = match tool.get_check_method() {
-                CheckingMethod::Hash => (info.number_of_duplicated_files_by_hash, info.number_of_groups_by_hash, info.lost_space_by_hash),
+                CheckingMethod::Hash | CheckingMethod::SizeNameHash => (info.number_of_duplicated_files_by_hash, info.number_of_groups_by_hash, info.lost_space_by_hash),
                 CheckingMethod::Name => (info.number_of_duplicated_files_by_name, info.number_of_groups_by_name, 0),
                 CheckingMethod::Size => (info.number_of_duplicated_files_by_size, info.number_of_groups_by_size, info.lost_space_by_size),
                 CheckingMethod::SizeName => (info.number_of_duplicated_files_by_size_name, info.number_of_groups_by_size_name, info.lost_space_by_size),

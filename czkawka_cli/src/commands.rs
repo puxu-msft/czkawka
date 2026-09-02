@@ -152,8 +152,8 @@ pub struct DuplicatesArgs {
         long,
         default_value = "HASH",
         value_parser = parse_checking_method_duplicate,
-        help = "Search method (NAME, SIZE, HASH)",
-        long_help = "Methods to search files.\nNAME - Fast but but rarely usable,\nSIZE - Fast but not accurate, checking by the file's size,\nHASH - The slowest method, checking by the hash of the entire file"
+        help = "Search method (NAME, SIZE, SIZE_NAME, SIZE_NAME_HASH, HASH)",
+        long_help = "Methods to search files.\nNAME - Fast but rarely usable,\nSIZE - Fast but not accurate, checking by the file's size,\nSIZE_NAME - Checks file size and name without reading file contents,\nSIZE_NAME_HASH - Checks file size and name before hashing matching candidates,\nHASH - The slowest method, checking by the hash of the entire file"
     )]
     pub search_method: CheckingMethod,
     #[clap(flatten)]
@@ -693,8 +693,9 @@ fn parse_checking_method_duplicate(src: &str) -> Result<CheckingMethod, &'static
         "name" => Ok(CheckingMethod::Name),
         "size" => Ok(CheckingMethod::Size),
         "size_name" => Ok(CheckingMethod::SizeName),
+        "size_name_hash" => Ok(CheckingMethod::SizeNameHash),
         "hash" => Ok(CheckingMethod::Hash),
-        _ => Err("Couldn't parse the search method (allowed: NAME, SIZE, HASH)"),
+        _ => Err("Couldn't parse the search method (allowed: NAME, SIZE, SIZE_NAME, SIZE_NAME_HASH, HASH)"),
     }
 }
 
@@ -861,3 +862,13 @@ EXAMPLES:
     {bin} symlinks -d /home/kicikici/ /home/szczek -e /home/kicikici/jestempsem -x jpg -f results.txt
     {bin} broken -d /home/mikrut/ -e /home/mikrut/trakt -f results.txt
     {bin} ext -d /home/mikrut/ -e /home/mikrut/trakt -f results.txt"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_size_name_hash_checking_method() {
+        assert_eq!(parse_checking_method_duplicate("size_name_hash"), Ok(CheckingMethod::SizeNameHash));
+    }
+}
